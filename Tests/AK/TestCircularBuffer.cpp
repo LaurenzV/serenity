@@ -342,15 +342,11 @@ TEST_CASE(find_copy_in_seekback)
     auto written_needle_bytes = buffer.write(needle);
     VERIFY(written_needle_bytes == needle.size());
 
-    // Note: As of now, the preference during a tie is determined by which algorithm found the match.
-    //       Hash-based matching finds the shortest distance first, while memmem finds the greatest distance first.
-    //       A matching TODO can be found in CircularBuffer.cpp.
-
     {
         // Find the largest match with a length between 1 and 1 (all "A").
         auto match = buffer.find_copy_in_seekback(1, 1);
         EXPECT(match.has_value());
-        EXPECT_EQ(match.value().distance, 11ul);
+        EXPECT_EQ(match.value().distance, 2ul);
         EXPECT_EQ(match.value().length, 1ul);
     }
 
@@ -358,7 +354,7 @@ TEST_CASE(find_copy_in_seekback)
         // Find the largest match with a length between 1 and 2 (all "AB", everything smaller gets eliminated).
         auto match = buffer.find_copy_in_seekback(2, 1);
         EXPECT(match.has_value());
-        EXPECT_EQ(match.value().distance, 11ul);
+        EXPECT_EQ(match.value().distance, 2ul);
         EXPECT_EQ(match.value().length, 2ul);
     }
 
@@ -424,6 +420,102 @@ TEST_CASE(find_copy_in_seekback)
         // Check that we don't find anything for a minimum length beyond the whole buffer size.
         auto match = buffer.find_copy_in_seekback(12, 13);
         EXPECT(!match.has_value());
+    }
+}
+
+TEST_CASE(find_copy_in_seekback_small_haystack)
+{
+    // This covers multiple individual bugs, depending on the broken implementation this may
+    // loop infinitely or run out of memory bounds.
+
+    Array<u8, 3> const haystack {
+        0x41, 0x4b, 0x2f
+    };
+    Array<u8, 4> const needle {
+        0x41, 0x4b, 0x2f, 0x47
+    };
+
+    // Set up the buffer for testing.
+    auto buffer = MUST(SearchableCircularBuffer::create_empty(haystack.size() + needle.size()));
+    auto written_haystack_bytes = buffer.write(haystack);
+    VERIFY(written_haystack_bytes == haystack.size());
+    MUST(buffer.discard(haystack.size()));
+    auto written_needle_bytes = buffer.write(needle);
+    VERIFY(written_needle_bytes == needle.size());
+
+    {
+        auto match = buffer.find_copy_in_seekback(273, 2);
+        EXPECT(match.has_value());
+        EXPECT_EQ(match.value().distance, 3ul);
+        EXPECT_EQ(match.value().length, 3ul);
+    }
+}
+
+TEST_CASE(find_copy_in_seekback_small_needle)
+{
+    Array<u8, 3> const haystack {
+        0x41, 0x4b, 0x2f
+    };
+    Array<u8, 2> const needle {
+        0x4b, 0x00
+    };
+
+    auto buffer = MUST(SearchableCircularBuffer::create_empty(haystack.size() + needle.size()));
+    auto written_haystack_bytes = buffer.write(haystack);
+    VERIFY(written_haystack_bytes == haystack.size());
+    MUST(buffer.discard(haystack.size()));
+    auto written_needle_bytes = buffer.write(needle);
+    VERIFY(written_needle_bytes == needle.size());
+
+    {
+        auto match = buffer.find_copy_in_seekback(2, 1);
+        EXPECT(match.has_value());
+        EXPECT_EQ(match.value().distance, 2ul);
+        EXPECT_EQ(match.value().length, 1ul);
+    }
+}
+
+TEST_CASE(find_copy_in_seekback_last_match)
+{
+    Array<u8, 3> const haystack {
+        0x41, 0x4b, 0x2f //, 0x2f, 0x00
+    };
+
+    // Note: The additional non-matching bytes are here to avoid a trivial limit of the maximum length
+    //       to the needle length, which early-returns the result before advancing the haystack.
+    Array<u8, 2> const needle_1 {
+        0x2f, 0x00
+    };
+    Array<u8, 2> const needle_2 {
+        0x41, 0x00
+    };
+
+    auto buffer = MUST(SearchableCircularBuffer::create_empty(haystack.size() + needle_1.size() + needle_2.size()));
+    auto written_haystack_bytes = buffer.write(haystack);
+    VERIFY(written_haystack_bytes == haystack.size());
+    MUST(buffer.discard(haystack.size()));
+
+    {
+        auto written_needle_bytes = buffer.write(needle_1);
+        VERIFY(written_needle_bytes == needle_1.size());
+
+        auto match = buffer.find_copy_in_seekback(2, 1);
+        EXPECT(match.has_value());
+        EXPECT_EQ(match.value().distance, 1ul);
+        EXPECT_EQ(match.value().length, 1ul);
+
+        // Note: needle_1 is part of the search data after this.
+        MUST(buffer.discard(written_needle_bytes));
+    }
+
+    {
+        auto written_needle_bytes = buffer.write(needle_2);
+        VERIFY(written_needle_bytes == needle_2.size());
+
+        auto match = buffer.find_copy_in_seekback(2, 1);
+        EXPECT(match.has_value());
+        EXPECT_EQ(match.value().distance, 5ul);
+        EXPECT_EQ(match.value().length, 1ul);
     }
 }
 
